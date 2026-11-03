@@ -691,7 +691,8 @@ class SimulationEngine:
         
         return fig
 
-    def plot_dispersion_ecarts_violons(self, traj_pr, traj_dec, scenario, niveau_initial=None, return_stats=False):
+    def plot_dispersion_ecarts_violons(self, traj_pr, traj_dec, scenario, niveau_initial=None, return_stats=False,
+                                       product=None, est_rappele_dec=None, obs_de_rappel_dec=None):
         import plotly.graph_objects as go
         import numpy as np
         
@@ -701,17 +702,50 @@ class SimulationEngine:
         fig = go.Figure()
         
         nb_annees = scenario.annees
-        x_labels = [f"Année {k}" for k in range(1, nb_annees + 1)]
         means = []
         medians = []
         mins = []
         maxs = []
         stats_data = []
+        x_mean_labels = []
         
+        is_pricing_mode = (est_rappele_dec is not None and obs_de_rappel_dec is not None and product is not None)
+        if is_pricing_mode:
+            jours_par_mois = scenario.jours_par_an // 12
+            freq_obs = getattr(product, 'frequence_obs_mois', 3)
+            jours_entre_obs = jours_par_mois * freq_obs
+            t_rappel = obs_de_rappel_dec * jours_entre_obs
+            nb_total = traj_dec.shape[0]
+
         for idx, k in enumerate(range(1, nb_annees + 1)):
             t_idx = k * scenario.jours_par_an
-            # Écart en % du spot initial : (Decrement - Price Return) pour illustrer le drag négatif
-            ecart_k = ((traj_dec[:, t_idx] - traj_pr[:, t_idx]) / niveau_initial) * 100.0
+            label_annee = f"Année {k}"
+            
+            if is_pricing_mode:
+                # Trajectoires actives à la date anniversaire k (non rappelées strictement avant t_idx)
+                mask_active = ~(est_rappele_dec & (t_rappel < t_idx))
+                n_active = int(np.sum(mask_active))
+                pct_active = (n_active / nb_total) * 100.0
+                
+                if n_active == 0:
+                    stats_data.append({
+                        "Année": label_annee,
+                        "Actives": "0 (0.0%)",
+                        "Médiane": None,
+                        "Moyenne": None,
+                        "Q25": None,
+                        "Q75": None,
+                        "IQR": None,
+                        "Min": None,
+                        "Max": None
+                    })
+                    continue
+                    
+                ecart_k = ((traj_dec[mask_active, t_idx] - traj_pr[mask_active, t_idx]) / niveau_initial) * 100.0
+            else:
+                n_active = traj_dec.shape[0]
+                pct_active = 100.0
+                ecart_k = ((traj_dec[:, t_idx] - traj_pr[:, t_idx]) / niveau_initial) * 100.0
             
             med = float(np.median(ecart_k))
             mn = float(np.mean(ecart_k))
@@ -725,9 +759,10 @@ class SimulationEngine:
             means.append(mn)
             mins.append(val_min)
             maxs.append(val_max)
+            x_mean_labels.append(label_annee)
             
-            stats_data.append({
-                "Année": f"Année {k}",
+            stat_row = {
+                "Année": label_annee,
                 "Médiane": med,
                 "Moyenne": mn,
                 "Q25": q25,
@@ -735,13 +770,22 @@ class SimulationEngine:
                 "IQR": iqr,
                 "Min": val_min,
                 "Max": val_max
-            })
+            }
+            if is_pricing_mode:
+                stat_row["Actives"] = f"{n_active:,} ({pct_active:.1f}%)"
+            stats_data.append(stat_row)
+            
+            # Hover personnalisé indiquant les trajectoires actives en pricing
+            if is_pricing_mode:
+                hover_info = f"<b>{label_annee}</b><br>Écart : <b>%{{y:+.2f}}%</b><br>Trajectoires encore actives : <b>{n_active:,} ({pct_active:.1f}%)</b><extra></extra>"
+            else:
+                hover_info = f"<b>{label_annee}</b><br>Écart : <b>%{{y:+.2f}}%</b><extra></extra>"
             
             # Violon avec boîte à moustache intégrée (Raincloud / Box-in-Violin)
             fig.add_trace(go.Violin(
                 y=ecart_k,
-                x=[f"Année {k}"] * len(ecart_k),
-                name=f"Année {k}",
+                x=[label_annee] * len(ecart_k),
+                name=label_annee,
                 box_visible=True,
                 box_width=0.38,
                 box_fillcolor='rgba(255, 255, 255, 0.95)', # Boîte blanche très lisible et nette
@@ -755,7 +799,7 @@ class SimulationEngine:
                 line_width=1.5,
                 fillcolor='rgba(37, 99, 235, 0.12)', # Voile bleu glacier translucide
                 showlegend=False,
-                hoverinfo='y+name'
+                hovertemplate=hover_info
             ))
             
             # Moustache verticale jusqu'au Max réel
@@ -808,16 +852,25 @@ class SimulationEngine:
         
         # Moyenne : Croix noire ultra-fine (symbole natif Plotly 'x-thin' en trait simple)
         fig.add_trace(go.Scatter(
-            x=x_labels, y=means, mode='markers',
+            x=x_mean_labels, y=means, mode='markers',
             marker=dict(symbol='x-thin', size=11, color='#0f172a', line=dict(width=1.0, color='#0f172a')),
             name='Moyenne (Croix)',
             hovertemplate="<b>%{x}</b><br>Moyenne : <b>%{y:+.2f}%</b> du Spot<extra></extra>"
         ))
         
+        if is_pricing_mode:
+            barr_init_pct = (product.barriere_rappel / niveau_initial) * 100.0
+            chart_title = (
+                "<b>Dispersion des Écarts (Décrément - PR) sur Trajectoires Actives</b><br>"
+                f"<span style='font-size:12px; color:#64748b; font-weight:normal;'>Conditionnée à la barrière de rappel sur le Décrément ({barr_init_pct:.0f}% initial) — arrêt des trajectoires dès rappel</span>"
+            )
+        else:
+            chart_title = "<b>Dispersion des Écarts (Decrement - Price Return) par Année</b>"
+            
         fig.update_layout(
             title=dict(
-                text="<b>Dispersion des Écarts (Decrement - Price Return) par Année</b>",
-                font=dict(size=18, color='#0f172a')
+                text=chart_title,
+                font=dict(size=17, color='#0f172a')
             ),
             xaxis=dict(
                 title=dict(text="<b>Horizon Temporel (Année)</b>", font=dict(size=14, color='#0f172a')),
@@ -847,7 +900,7 @@ class SimulationEngine:
                 borderwidth=1,
                 font=dict(size=12, color='#0f172a')
             ),
-            margin=dict(l=60, r=40, t=85, b=60)
+            margin=dict(l=60, r=40, t=95, b=60)
         )
         
         if return_stats:

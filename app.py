@@ -252,8 +252,37 @@ if lancer:
                     
                 st.markdown("---")
                 
-                # 3. Analyse détaillée de Krach
-                st.subheader("3. Analyse de Sévérité du Krach sous PDI")
+                # 3. Dispersion des écarts sur trajectoires actives (Effet barrière de rappel)
+                st.subheader("3. Dispersion des Écarts (Décrément - Price Return) sur Trajectoires Non Rappelées")
+                fig_violins_pricing, stats_disp_pricing = moteur.plot_dispersion_ecarts_violons(
+                    traj_pr, traj_dec, scenario_krach,
+                    niveau_initial=niveau_initial,
+                    return_stats=True,
+                    product=mon_produit,
+                    est_rappele_dec=est_rappele_dec,
+                    obs_de_rappel_dec=obs_de_rappel_dec
+                )
+                st.plotly_chart(fig_violins_pricing, use_container_width=True)
+                
+                with st.expander("Consulter le tableau quantitatif détaillé des écarts sur trajectoires actives", expanded=False):
+                    df_disp_p = pd.DataFrame(stats_disp_pricing)
+                    df_disp_p_display = pd.DataFrame({
+                        "Horizon": df_disp_p["Année"],
+                        "Trajectoires Actives": df_disp_p["Actives"],
+                        "Médiane (Dec - PR)": df_disp_p["Médiane"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "Moyenne (Dec - PR)": df_disp_p["Moyenne"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "25e centile (Q1)": df_disp_p["Q25"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "75e centile (Q3)": df_disp_p["Q75"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "Écart interquartile (IQR)": df_disp_p["IQR"].apply(lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A"),
+                        "Écart Min": df_disp_p["Min"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "Écart Max": df_disp_p["Max"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                    })
+                    st.dataframe(df_disp_p_display, use_container_width=True)
+                    
+                st.markdown("---")
+                
+                # 4. Analyse détaillée de Krach
+                st.subheader("4. Analyse de Sévérité du Krach sous PDI")
                 if bin_stats:
                     fig_binned = moteur.plot_binned_averages(bin_stats)
                     st.plotly_chart(fig_binned, use_container_width=True)
