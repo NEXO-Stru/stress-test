@@ -56,16 +56,15 @@ with st.sidebar.expander("3. Caractéristiques des Indices", expanded=True):
             vol = st.number_input("Volatilité de l'Indice (%)", value=def_vol, step=1.0, format="%.1f", key=f"vol_idx_{i}")
             yi = st.number_input("Yield Div Naturel Réinvesti (%)", value=def_yi, step=0.25, format="%.2f", key=f"yi_idx_{i}")
             
+            nom_idx = "Indice Décrément" if int(nb_indices) == 1 else f"Indice {i+1}"
             idx_temp = DecrementIndex(
                 niveau_initial=s0,
                 decrement_annuel=dec,
                 vol=vol / 100.0,
-                dividend_yield=yi / 100.0
+                dividend_yield=yi / 100.0,
+                nom=nom_idx
             )
-            nom_auto = idx_temp.get_auto_label(idx_num=i+1)
-            idx_temp.nom = nom_auto
             liste_indices.append(idx_temp)
-            st.caption(f"**Libellé :** `{nom_auto}`")
 
 if mode == "Pricing":
     with st.sidebar.expander("4. Produit Structuré", expanded=True):
