@@ -137,11 +137,15 @@ if lancer:
                 st.plotly_chart(fig_multi_traj, use_container_width=True)
                 st.markdown("---")
                 
-                # 2. Dispersion des Écarts à Maturité
-                st.subheader("2. Dispersion Comparée de l'Écart (Décrément - Price Return) à Maturité")
-                st.caption("Distribution de la surperformance / sous-performance du décrément bornée entre les centiles P1 et P99.")
-                fig_multi_disp = moteur.plot_multi_dispersion_ecarts(results_multi, scenario_krach)
-                st.plotly_chart(fig_multi_disp, use_container_width=True)
+                # 2. Évolution Temporelle des Écarts (Dec - PR)
+                st.subheader("2. Dynamique Temporelle des Écarts (Décrément - Price Return)")
+                st.caption("Médiane en trait plein et couloir interquartile [Q25 - Q75] en voile pour chaque indice au fil des ans.")
+                fig_multi_ecarts = moteur.plot_multi_courbes_ecarts(results_multi, scenario_krach, filter_active=False)
+                st.plotly_chart(fig_multi_ecarts, use_container_width=True)
+                
+                with st.expander("Consulter la dispersion des écarts à maturité (Boîtes à moustaches P1 - P99)", expanded=False):
+                    fig_multi_disp = moteur.plot_multi_dispersion_ecarts(results_multi, scenario_krach)
+                    st.plotly_chart(fig_multi_disp, use_container_width=True)
 
         elif mode == "Pricing":
             with st.spinner(f"Valorisation sur {len(liste_indices)} indice(s) ({int(nb_trajectoires)} trajectoires appariées)..."):
@@ -207,10 +211,17 @@ if lancer:
                 st.plotly_chart(fig_rappels, use_container_width=True)
                 st.markdown("---")
                 
-                # 3. Dispersion des écarts à maturité
-                st.subheader("3. Dispersion Comparée de l'Écart (Décrément - Price Return) à Maturité")
-                fig_disp_pricing = moteur.plot_multi_dispersion_ecarts(results_multi_pricing, scenario_krach)
-                st.plotly_chart(fig_disp_pricing, use_container_width=True)
+                # 3. Évolution Temporelle des Écarts (Dec - PR) sur Trajectoires Non Rappelées
+                st.subheader("3. Dynamique Temporelle des Écarts sur Trajectoires Non Rappelées")
+                st.caption("Écart subi par un investisseur encore investi dans le produit (médiane et couloir [Q25 - Q75]).")
+                fig_multi_ecarts_pricing = moteur.plot_multi_courbes_ecarts(
+                    results_multi_pricing, scenario_krach, filter_active=True, product=mon_produit
+                )
+                st.plotly_chart(fig_multi_ecarts_pricing, use_container_width=True)
+                
+                with st.expander("Consulter la dispersion des écarts à maturité (Boîtes à moustaches P1 - P99)", expanded=False):
+                    fig_disp_pricing = moteur.plot_multi_dispersion_ecarts(results_multi_pricing, scenario_krach)
+                    st.plotly_chart(fig_disp_pricing, use_container_width=True)
 
 else:
     st.info("Ajustez les paramètres dans la barre latérale gauche, puis cliquez sur le bouton pour lancer le calcul.")

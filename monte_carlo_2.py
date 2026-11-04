@@ -1175,6 +1175,119 @@ class SimulationEngine:
         )
         return fig
 
+    def plot_multi_courbes_ecarts(self, results: dict, scenario: MarketScenario, filter_active: bool = False, product: AutocallProduct = None):
+        """Affiche l'évolution temporelle continue de l'écart (Dec - PR)/S0 pour chaque indice :
+        Médiane en trait plein, couloir interquartile [Q25 - Q75] en voile translucide.
+        Supporte le conditionnement aux trajectoires actives (non rappelées) en mode pricing.
+        """
+        fig = go.Figure()
+        self._add_background_regimes_plotly(fig, scenario)
+        
+        axe_temps = np.linspace(0, scenario.annees, scenario.total_jours + 1)
+        palette = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
+        
+        jours_par_mois = scenario.jours_par_an // 12
+        jours_entre_obs = (jours_par_mois * product.frequence_obs_mois) if (product is not None) else None
+        
+        for idx_i, (nom_idx, data) in enumerate(results.items()):
+            color = palette[idx_i % len(palette)]
+            idx_obj = data["index"]
+            s0 = idx_obj.niveau_initial
+            
+            traj_dec = data["traj_dec"]
+            traj_pr = data["traj_pr"]
+            
+            # Matrice des écarts journaliers en % de S0
+            mat_ecarts = ((traj_dec - traj_pr) / s0) * 100.0
+            
+            med_courbe = np.zeros(scenario.total_jours + 1)
+            q25_courbe = np.zeros(scenario.total_jours + 1)
+            q75_courbe = np.zeros(scenario.total_jours + 1)
+            
+            if filter_active and ("est_rappele_dec" in data) and (jours_entre_obs is not None):
+                est_rappele = data["est_rappele_dec"]
+                obs_rappel = data["obs_de_rappel_dec"]
+                nb_obs = int(scenario.total_jours // jours_entre_obs)
+                
+                for k in range(nb_obs + 1):
+                    if k == 0:
+                        j_start = 0
+                        j_end = min(scenario.total_jours + 1, jours_entre_obs)
+                        actif = np.ones(len(est_rappele), dtype=bool)
+                    else:
+                        j_start = k * jours_entre_obs
+                        j_end = min(scenario.total_jours + 1, (k + 1) * jours_entre_obs) if k < nb_obs else scenario.total_jours + 1
+                        actif = (~est_rappele) | (obs_rappel > k)
+                        
+                    if np.any(actif) and j_start < scenario.total_jours + 1:
+                        tranche = mat_ecarts[actif, j_start:j_end]
+                        med_courbe[j_start:j_end] = np.median(tranche, axis=0)
+                        q25_courbe[j_start:j_end] = np.percentile(tranche, 25, axis=0)
+                        q75_courbe[j_start:j_end] = np.percentile(tranche, 75, axis=0)
+                    elif j_start < scenario.total_jours + 1:
+                        med_courbe[j_start:j_end] = np.nan
+                        q25_courbe[j_start:j_end] = np.nan
+                        q75_courbe[j_start:j_end] = np.nan
+            else:
+                med_courbe = np.median(mat_ecarts, axis=0)
+                q25_courbe = np.percentile(mat_ecarts, 25, axis=0)
+                q75_courbe = np.percentile(mat_ecarts, 75, axis=0)
+                
+            rgb_col = f"{int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}"
+            
+            # Borne haute Q75
+            fig.add_trace(go.Scatter(
+                x=axe_temps, y=q75_courbe, mode='lines',
+                line=dict(width=0),
+                showlegend=False,
+                legendgroup=nom_idx,
+                hoverinfo='skip'
+            ))
+            # Borne basse Q25 + Voile translucide
+            fig.add_trace(go.Scatter(
+                x=axe_temps, y=q25_courbe, mode='lines',
+                line=dict(width=0),
+                fill='tonexty',
+                fillcolor=f"rgba({rgb_col}, 0.15)",
+                name=f"{nom_idx} [Q25 - Q75]",
+                legendgroup=nom_idx
+            ))
+            # Médiane (trait plein épais)
+            fig.add_trace(go.Scatter(
+                x=axe_temps, y=med_courbe, mode='lines',
+                line=dict(color=color, width=2.8),
+                name=f"{nom_idx} (Médiane)",
+                legendgroup=nom_idx,
+                hovertemplate=f"<b>{nom_idx}</b><br>Horizon: %{{x:.2f}} ans<br>Écart Médian: %{{y:+.2f}}%<extra></extra>"
+            ))
+            
+        # Ligne de parité Décrément = PR (0%)
+        fig.add_hline(
+            y=0, line_dash="dash", line_color="#475569", line_width=1.5,
+            annotation_text="Parité Décrément = PR (0%)", annotation_position="bottom right",
+            annotation_font=dict(size=11, color="#475569")
+        )
+        
+        titre_actif = " sur Trajectoires Non Rappelées" if filter_active else ""
+        fig.update_layout(
+            title=f"<b>Évolution Temporelle des Écarts (Décrément - Price Return){titre_actif}</b><br><sup>Médianes (traits pleins) et couloirs interquartiles [Q25 - Q75] (voiles) en % du Spot Initial S0</sup>",
+            xaxis_title="<b>Horizon Temporel (Années)</b>",
+            yaxis_title="<b>Écart : (Dec - PR) / S0 (%)</b>",
+            template="plotly_white",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="center",
+                x=0.5,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="#e2e8f0",
+                borderwidth=1
+            ),
+            margin=dict(l=60, r=40, t=110, b=60)
+        )
+        return fig
+
     def plot_multi_dispersion_ecarts(self, results: dict, scenario: MarketScenario):
         """Affiche des boîtes à moustaches comparant la dispersion de l'écart (Dec - PR)/S0 à maturité pour chaque indice."""
         fig = go.Figure()
