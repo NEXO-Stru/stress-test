@@ -52,6 +52,15 @@ class DecrementIndex:
         self.dividend_yield = dividend_yield
         self.nom = str(nom)
         
+    def get_auto_label(self, idx_num=None):
+        s0_str = f"S0 {self.niveau_initial:.0f} | " if abs(self.niveau_initial - 1000.0) > 1e-4 else ""
+        vol_val = self.vol[0] if isinstance(self.vol, (list, tuple, np.ndarray)) else self.vol
+        div_val = self.dividend_yield[0] if isinstance(self.dividend_yield, (list, tuple, np.ndarray)) else self.dividend_yield
+        vol_str = f"{vol_val*100:.0f}%"
+        div_str = f"{div_val*100:.1f}%"
+        prefix = f"Indice {idx_num} " if idx_num is not None else ""
+        return f"{prefix}({s0_str}Dec {self.decrement_annuel:.0f} | Vol {vol_str} | Div {div_str})"
+        
     def _get_vol_dyn(self, scenario: MarketScenario):
         if self.vol is None:
             raise ValueError("La volatilité (vol) doit être définie sur l'indice DecrementIndex.")
@@ -133,13 +142,26 @@ class DecrementIndex:
 
 class AutocallProduct:
     """Modélise le produit structuré et ses règles de marché (classe de base)."""
-    def __init__(self, barriere_rappel=1000.0, niveau_pdi=500.0, non_call_period_mois=11, frequence_obs_mois=3, degressivite=0.0, coupon_periode=2.0):
-        self.barriere_rappel = barriere_rappel
-        self.niveau_pdi = niveau_pdi
+    def __init__(self, barriere_rappel=1000.0, niveau_pdi=500.0, non_call_period_mois=11, frequence_obs_mois=3, degressivite=0.0, coupon_periode=2.0, ref_s0=None):
+        self.barriere_rappel = float(barriere_rappel)
+        self.niveau_pdi = float(niveau_pdi)
         self.non_call_period_mois = non_call_period_mois
         self.frequence_obs_mois = frequence_obs_mois
         self.degressivite = degressivite
         self.coupon_periode = coupon_periode / 100.0
+        self.ref_s0 = float(ref_s0) if ref_s0 is not None else self.barriere_rappel
+        
+    def clone_for_spot(self, new_s0):
+        ratio = float(new_s0) / self.ref_s0
+        return AutocallProduct(
+            barriere_rappel=self.barriere_rappel * ratio,
+            niveau_pdi=self.niveau_pdi * ratio,
+            non_call_period_mois=self.non_call_period_mois,
+            frequence_obs_mois=self.frequence_obs_mois,
+            degressivite=self.degressivite,
+            coupon_periode=self.coupon_periode * 100.0,
+            ref_s0=float(new_s0)
+        )
         
     def evaluate(self, trajectoires, scenario: MarketScenario, nb_trajectoires):
         est_rappele = np.zeros(nb_trajectoires, dtype=bool)
@@ -198,7 +220,17 @@ class AthenaProduct(AutocallProduct):
     Le coupon n'est versé qu'au moment du rappel anticipé (effet mémoire automatique).
     Aucun flux intermédiaire n'est détaché en cours de vie.
     """
-    pass
+    def clone_for_spot(self, new_s0):
+        ratio = float(new_s0) / self.ref_s0
+        return AthenaProduct(
+            barriere_rappel=self.barriere_rappel * ratio,
+            niveau_pdi=self.niveau_pdi * ratio,
+            non_call_period_mois=self.non_call_period_mois,
+            frequence_obs_mois=self.frequence_obs_mois,
+            degressivite=self.degressivite,
+            coupon_periode=self.coupon_periode * 100.0,
+            ref_s0=float(new_s0)
+        )
 
 
 class PhoenixProduct(AutocallProduct):
@@ -210,17 +242,32 @@ class PhoenixProduct(AutocallProduct):
     """
     def __init__(self, barriere_rappel=1000.0, barriere_coupon=700.0, niveau_pdi=500.0, 
                  non_call_period_mois=11, frequence_obs_mois=3, degressivite=0.0, 
-                 coupon_periode=2.0, avec_memoire=True):
+                 coupon_periode=2.0, avec_memoire=True, ref_s0=None):
         super().__init__(
             barriere_rappel=barriere_rappel,
             niveau_pdi=niveau_pdi,
             non_call_period_mois=non_call_period_mois,
             frequence_obs_mois=frequence_obs_mois,
             degressivite=degressivite,
-            coupon_periode=coupon_periode
+            coupon_periode=coupon_periode,
+            ref_s0=ref_s0
         )
-        self.barriere_coupon = barriere_coupon
+        self.barriere_coupon = float(barriere_coupon)
         self.avec_memoire = avec_memoire
+
+    def clone_for_spot(self, new_s0):
+        ratio = float(new_s0) / self.ref_s0
+        return PhoenixProduct(
+            barriere_rappel=self.barriere_rappel * ratio,
+            barriere_coupon=self.barriere_coupon * ratio,
+            niveau_pdi=self.niveau_pdi * ratio,
+            non_call_period_mois=self.non_call_period_mois,
+            frequence_obs_mois=self.frequence_obs_mois,
+            degressivite=self.degressivite,
+            coupon_periode=self.coupon_periode * 100.0,
+            avec_memoire=self.avec_memoire,
+            ref_s0=float(new_s0)
+        )
 
     def calculate_payoff(self, trajectoires, est_rappele, obs_de_rappel, niveau_initial, scenario: MarketScenario, taux_actualisation: float = 0.0):
         nb_trajectoires = trajectoires.shape[0]
@@ -327,30 +374,65 @@ class SimulationEngine:
 
     def simulate_multi_indices(self, list_indices: list, scenario: MarketScenario):
         """Simule simultanément plusieurs indices sur la MÊME matrice de chocs aléatoires Z (tirages appariés)."""
+        np.random.seed(self.seed)
         Z_chocs = np.random.normal(0, 1, size=(self.nb_trajectoires, scenario.total_jours))
         results = {}
         for idx in list_indices:
             traj_pr, traj_dec = idx.simulate(scenario, self.nb_trajectoires, Z_chocs)
+            val_fin_dec = traj_dec[:, -1]
+            val_fin_pr = traj_pr[:, -1]
+            moy_dec = np.mean(val_fin_dec)
+            moy_pr = np.mean(val_fin_pr)
+            s0 = idx.niveau_initial
+            
             results[idx.nom] = {
                 "index": idx,
                 "traj_pr": traj_pr,
-                "traj_dec": traj_dec
+                "traj_dec": traj_dec,
+                "moy_dec": moy_dec,
+                "moy_pr": moy_pr,
+                "moy_dec_pct": (moy_dec / s0 - 1.0) * 100.0,
+                "moy_pr_pct": (moy_pr / s0 - 1.0) * 100.0,
+                "ecart_moy_pts": moy_dec - moy_pr,
+                "ecart_moy_pct": ((moy_dec - moy_pr) / s0) * 100.0,
+                "pct_crash_50_dec": np.mean(val_fin_dec < 0.50 * s0) * 100.0,
+                "pct_crash_50_pr": np.mean(val_fin_pr < 0.50 * s0) * 100.0
             }
         return results
 
     def run_multi_indices(self, list_indices: list, scenario: MarketScenario, product: AutocallProduct, taux_actualisation=0.0):
         """Évalue un produit structuré sur plusieurs indices en tirages appariés stricts (mêmes chocs Z)."""
+        np.random.seed(self.seed)
         Z_chocs = np.random.normal(0, 1, size=(self.nb_trajectoires, scenario.total_jours))
         results = {}
         for idx in list_indices:
             traj_pr, traj_dec = idx.simulate(scenario, self.nb_trajectoires, Z_chocs)
+            prod_idx = product.clone_for_spot(idx.niveau_initial) if hasattr(product, 'clone_for_spot') else product
             est_rappele_dec, obs_de_rappel_dec, payoffs_dec, est_rappele_pr, obs_de_rappel_pr, payoffs_pr = self.evaluer_produit(
-                product, traj_pr, traj_dec, scenario, niveau_initial=idx.niveau_initial, taux_actualisation=taux_actualisation
+                prod_idx, traj_pr, traj_dec, scenario, niveau_initial=idx.niveau_initial, taux_actualisation=taux_actualisation
             )
-            duration_dec = self.calculer_duration(est_rappele_dec, obs_de_rappel_dec, product, scenario)
-            duration_pr = self.calculer_duration(est_rappele_pr, obs_de_rappel_pr, product, scenario)
+            duration_dec = self.calculer_duration(est_rappele_dec, obs_de_rappel_dec, prod_idx, scenario)
+            duration_pr = self.calculer_duration(est_rappele_pr, obs_de_rappel_pr, prod_idx, scenario)
+            
+            # PDI
+            val_fin_dec = traj_dec[:, -1]
+            sous_pdi_dec = (val_fin_dec < prod_idx.niveau_pdi) & (~est_rappele_dec)
+            pct_pdi_dec = np.mean(sous_pdi_dec) * 100.0
+            
+            val_fin_pr = traj_pr[:, -1]
+            sous_pdi_pr = (val_fin_pr < prod_idx.niveau_pdi) & (~est_rappele_pr)
+            pct_pdi_pr = np.mean(sous_pdi_pr) * 100.0
+            
+            # Levier
+            levier = None
+            if np.any(sous_pdi_dec):
+                perte_dec = 1.0 - (np.mean(val_fin_dec[sous_pdi_dec]) / idx.niveau_initial)
+                perte_pr = 1.0 - (np.mean(val_fin_pr[sous_pdi_dec]) / idx.niveau_initial)
+                levier = (perte_dec / perte_pr) if perte_pr > 0 else 0.0
+
             results[idx.nom] = {
                 "index": idx,
+                "product": prod_idx,
                 "traj_pr": traj_pr,
                 "traj_dec": traj_dec,
                 "est_rappele_dec": est_rappele_dec,
@@ -360,7 +442,14 @@ class SimulationEngine:
                 "obs_de_rappel_pr": obs_de_rappel_pr,
                 "payoffs_pr": payoffs_pr,
                 "duration_dec": duration_dec,
-                "duration_pr": duration_pr
+                "duration_pr": duration_pr,
+                "pct_rappel_dec": np.mean(est_rappele_dec) * 100.0,
+                "pct_rappel_pr": np.mean(est_rappele_pr) * 100.0,
+                "moy_payoff_dec": np.mean(payoffs_dec) * 100.0,
+                "moy_payoff_pr": np.mean(payoffs_pr) * 100.0,
+                "pct_pdi_dec": pct_pdi_dec,
+                "pct_pdi_pr": pct_pdi_pr,
+                "levier_equivalent": levier
             }
         return results
 
@@ -1009,6 +1098,193 @@ class SimulationEngine:
         
         if return_stats:
             return fig, stats_data
+        return fig
+
+    def plot_multi_trajectoires(self, results: dict, scenario: MarketScenario):
+        """Affiche les trajectoires médianes et fuseaux [P10-P90] de plusieurs indices normalisés à 100%."""
+        fig = go.Figure()
+        self._add_background_regimes_plotly(fig, scenario)
+        
+        axe_temps = np.linspace(0, scenario.annees, scenario.total_jours + 1)
+        palette = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
+        
+        # 1. Price Return de référence (issu du premier indice)
+        premier_result = next(iter(results.values()))
+        s0_ref = premier_result["index"].niveau_initial
+        pr_pct = (premier_result["traj_pr"] / s0_ref) * 100.0
+        pr_med = np.median(pr_pct, axis=0)
+        
+        fig.add_trace(go.Scatter(
+            x=axe_temps, y=pr_med, mode='lines',
+            line=dict(color='#64748b', width=2.5, dash='dash'),
+            name='Price Return Référence (Médiane)',
+            legendgroup='PR'
+        ))
+        
+        # 2. Chaque indice Décrément
+        for idx_i, (nom_idx, data) in enumerate(results.items()):
+            color = palette[idx_i % len(palette)]
+            idx_obj = data["index"]
+            s0 = idx_obj.niveau_initial
+            dec_pct = (data["traj_dec"] / s0) * 100.0
+            
+            med = np.median(dec_pct, axis=0)
+            p10 = np.percentile(dec_pct, 10, axis=0)
+            p90 = np.percentile(dec_pct, 90, axis=0)
+            
+            # Fuseau P10 - P90
+            fig.add_trace(go.Scatter(
+                x=axe_temps, y=p90, mode='lines',
+                line=dict(width=0),
+                showlegend=False,
+                legendgroup=nom_idx,
+                hoverinfo='skip'
+            ))
+            fig.add_trace(go.Scatter(
+                x=axe_temps, y=p10, mode='lines',
+                line=dict(width=0),
+                fill='tonexty',
+                fillcolor=f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.12)",
+                name=f"{nom_idx} [P10-P90]",
+                legendgroup=nom_idx
+            ))
+            # Médiane (trait plein épais)
+            fig.add_trace(go.Scatter(
+                x=axe_temps, y=med, mode='lines',
+                line=dict(color=color, width=2.8),
+                name=f"{nom_idx} (Médiane)",
+                legendgroup=nom_idx
+            ))
+            
+        fig.update_layout(
+            title="<b>Comparaison Temporelle des Indices (% du Spot Initial S0)</b><br><sup>Médianes et fuseaux inter-centiles [P10 - P90] sur tirages aléatoires strictement appariés</sup>",
+            xaxis_title="<b>Horizon Temporel (Années)</b>",
+            yaxis_title="<b>Niveau de l'Indice (% de S0)</b>",
+            template="plotly_white",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="center",
+                x=0.5,
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="#e2e8f0",
+                borderwidth=1
+            ),
+            margin=dict(l=60, r=40, t=110, b=60)
+        )
+        return fig
+
+    def plot_multi_dispersion_ecarts(self, results: dict, scenario: MarketScenario):
+        """Affiche des boîtes à moustaches comparant la dispersion de l'écart (Dec - PR)/S0 à maturité pour chaque indice."""
+        fig = go.Figure()
+        palette = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2']
+        
+        for idx_i, (nom_idx, data) in enumerate(results.items()):
+            color = palette[idx_i % len(palette)]
+            s0 = data["index"].niveau_initial
+            ecart_maturite_pct = ((data["traj_dec"][:, -1] - data["traj_pr"][:, -1]) / s0) * 100.0
+            
+            p1 = np.percentile(ecart_maturite_pct, 1)
+            p99 = np.percentile(ecart_maturite_pct, 99)
+            
+            fig.add_trace(go.Box(
+                y=ecart_maturite_pct[(ecart_maturite_pct >= p1) & (ecart_maturite_pct <= p99)],
+                name=nom_idx,
+                marker_color=color,
+                boxpoints=False,
+                whiskerwidth=0.4,
+                line_width=1.8
+            ))
+            
+        fig.add_hline(y=0, line_dash="dash", line_color="#94a3b8", line_width=1.5)
+        fig.update_layout(
+            title="<b>Dispersion Comparée de l'Écart (Décrément - Price Return) à Maturité (% de S0)</b><br><sup>Bornée entre les centiles P1 et P99</sup>",
+            yaxis_title="<b>Écart (Dec - PR) / S0 (%)</b>",
+            template="plotly_white",
+            showlegend=False,
+            margin=dict(l=60, r=40, t=90, b=60)
+        )
+        return fig
+
+    def plot_multi_pricing_kpis(self, results: dict):
+        """Graphique à barres comparatif des KPIs majeurs de pricing."""
+        indices_noms = list(results.keys())
+        taux_autocall = [results[k]["pct_rappel_dec"] for k in indices_noms]
+        taux_pdi = [results[k]["pct_pdi_dec"] for k in indices_noms]
+        payoffs = [results[k]["moy_payoff_dec"] for k in indices_noms]
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=indices_noms, y=taux_autocall,
+            name="Taux d'Autocall (%)",
+            marker_color="#16a34a",
+            text=[f"{v:.1f}%" for v in taux_autocall],
+            textposition="auto"
+        ))
+        fig.add_trace(go.Bar(
+            x=indices_noms, y=taux_pdi,
+            name="Probabilité sous PDI (%)",
+            marker_color="#dc2626",
+            text=[f"{v:.2f}%" for v in taux_pdi],
+            textposition="auto"
+        ))
+        fig.add_trace(go.Bar(
+            x=indices_noms, y=payoffs,
+            name="Espérance de Gain (%)",
+            marker_color="#2563eb",
+            text=[f"{v:.1f}%" for v in payoffs],
+            textposition="auto"
+        ))
+        fig.update_layout(
+            barmode='group',
+            title="<b>Comparaison des Indicateurs Clés de Risque et de Rendement</b>",
+            yaxis_title="<b>Pourcentage (%)</b>",
+            template="plotly_white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=dict(l=50, r=40, t=90, b=60)
+        )
+        return fig
+
+    def plot_multi_pricing_rappels(self, results: dict, scenario: MarketScenario, product: AutocallProduct):
+        """Graphique à barres groupé comparant les dates de rappel anticipé pour chaque indice."""
+        jours_par_mois = scenario.jours_par_an // 12
+        jours_entre_obs = jours_par_mois * product.frequence_obs_mois
+        annees_par_obs = jours_entre_obs / scenario.jours_par_an
+        
+        nb_obs_total = int(scenario.total_jours // jours_entre_obs)
+        x_annees = [(k + 1) * annees_par_obs for k in range(nb_obs_total)]
+        x_labels = [f"An {a:.2f}" for a in x_annees]
+        
+        fig = go.Figure()
+        palette = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c']
+        
+        for idx_i, (nom_idx, data) in enumerate(results.items()):
+            color = palette[idx_i % len(palette)]
+            obs_rappel = data["obs_de_rappel_dec"]
+            est_rappele = data["est_rappele_dec"]
+            total_traj = len(est_rappele)
+            
+            pcts_obs = []
+            for k in range(1, nb_obs_total + 1):
+                pct = np.sum(est_rappele & (obs_rappel == k)) / total_traj * 100.0
+                pcts_obs.append(pct)
+                
+            fig.add_trace(go.Bar(
+                x=x_labels, y=pcts_obs,
+                name=nom_idx,
+                marker_color=color
+            ))
+            
+        fig.update_layout(
+            barmode='group',
+            title="<b>Distribution Comparée des Constatations de Rappel Anticipé</b>",
+            xaxis_title="<b>Date de Constatation</b>",
+            yaxis_title="<b>Fréquence de Rappel (%)</b>",
+            template="plotly_white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=dict(l=50, r=40, t=90, b=60)
+        )
         return fig
 
 if __name__ == "__main__":

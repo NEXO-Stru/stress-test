@@ -1,8 +1,5 @@
 import streamlit as st
 import numpy as np
-import io
-import contextlib
-import plotly.graph_objects as go
 import pandas as pd
 import monte_carlo_2
 import importlib
@@ -21,7 +18,7 @@ st.sidebar.header("Paramètres")
 with st.sidebar.expander("1. Durée", expanded=True):
     annees = st.number_input("Années totales", value=10, min_value=1, step=1)
 
-with st.sidebar.expander("2. Configuration des Périodes (Scénario Macro)", expanded=True):
+with st.sidebar.expander("2. Scénario Macro", expanded=True):
     nb_periodes = st.number_input("Nombre de Périodes", value=1, min_value=1, step=1)
     
     mes_regimes_input = []
@@ -41,12 +38,34 @@ with st.sidebar.expander("2. Configuration des Périodes (Scénario Macro)", exp
             "r_perf": rp / 100.0
         })
 
-with st.sidebar.expander("3. Caractéristiques de l'Indice", expanded=True):
-    nom_indice = st.text_input("Nom de l'Indice", value="Indice Décrément")
-    niveau_initial = st.number_input("Niveau Initial S0 (pts)", value=1000.0, step=100.0)
-    decrement_annuel = st.number_input("Décrément Fixe Annuel D (pts)", value=50.0, step=5.0)
-    vol_input = st.number_input("Volatilité de l'Indice (%)", value=18.0, step=1.0, format="%.1f")
-    yi_input = st.number_input("Yield Div Naturel Réinvesti (%)", value=3.0, step=0.25, format="%.2f")
+with st.sidebar.expander("3. Caractéristiques des Indices", expanded=True):
+    nb_indices = st.number_input("Nombre d'indices à comparer", min_value=1, max_value=4, value=2, step=1)
+    
+    liste_indices = []
+    tabs_indices = st.tabs([f"Indice {i+1}" for i in range(int(nb_indices))])
+    
+    for i, tab in enumerate(tabs_indices):
+        with tab:
+            def_s0 = 1000.0
+            def_dec = 50.0 if i == 0 else (40.0 if i == 1 else (35.0 if i == 2 else 60.0))
+            def_vol = 18.0 if i == 0 else (20.0 if i == 1 else (22.0 if i == 2 else 25.0))
+            def_yi = 3.0 if i == 0 else (3.5 if i == 1 else (3.0 if i == 2 else 4.0))
+            
+            s0 = st.number_input("Niveau Initial S0 (pts)", value=def_s0, step=100.0, key=f"s0_idx_{i}")
+            dec = st.number_input("Décrément Fixe Annuel D (pts)", value=def_dec, step=5.0, key=f"dec_idx_{i}")
+            vol = st.number_input("Volatilité de l'Indice (%)", value=def_vol, step=1.0, format="%.1f", key=f"vol_idx_{i}")
+            yi = st.number_input("Yield Div Naturel Réinvesti (%)", value=def_yi, step=0.25, format="%.2f", key=f"yi_idx_{i}")
+            
+            idx_temp = DecrementIndex(
+                niveau_initial=s0,
+                decrement_annuel=dec,
+                vol=vol / 100.0,
+                dividend_yield=yi / 100.0
+            )
+            nom_auto = idx_temp.get_auto_label(idx_num=i+1)
+            idx_temp.nom = nom_auto
+            liste_indices.append(idx_temp)
+            st.caption(f"**Libellé :** `{nom_auto}`")
 
 if mode == "Pricing":
     with st.sidebar.expander("4. Produit Structuré", expanded=True):
@@ -89,88 +108,47 @@ if lancer:
     else:
         moteur = SimulationEngine(nb_trajectoires=int(nb_trajectoires), seed=int(seed))
         scenario_krach = MarketScenario(config_regimes=mes_regimes_input, annees=int(annees))
-        mon_indice_dec = DecrementIndex(
-            niveau_initial=niveau_initial, 
-            decrement_annuel=decrement_annuel,
-            vol=vol_input / 100.0,
-            dividend_yield=yi_input / 100.0,
-            nom=nom_indice
-        )
 
         if mode == "Comparaison Trajectoires":
-            with st.spinner(f"Génération de {int(nb_trajectoires)} trajectoires pour l'indice Price Return et Décrément..."):
-                traj_pr, traj_dec = moteur.simulate_trajectoires(mon_indice_dec, scenario_krach)
+            with st.spinner(f"Génération de {int(nb_trajectoires)} trajectoires pour {len(liste_indices)} indice(s)..."):
+                results_multi = moteur.simulate_multi_indices(liste_indices, scenario_krach)
                 
-                # Métriques macro de l'indice
-                valeurs_finales_dec = traj_dec[:, -1]
-                valeurs_finales_pr = traj_pr[:, -1]
-                moy_dec = np.mean(valeurs_finales_dec)
-                moy_pr = np.mean(valeurs_finales_pr)
-                ecart_moy_pts = moy_dec - moy_pr
-                ecart_moy_pct = (ecart_moy_pts / niveau_initial) * 100.0
-                pct_crash_50_dec = np.mean(valeurs_finales_dec < 0.50 * niveau_initial) * 100.0
-                pct_crash_50_pr = np.mean(valeurs_finales_pr < 0.50 * niveau_initial) * 100.0
+                st.subheader(f"Vue d'Ensemble & Indicateurs Clés à Maturité (Année {scenario_krach.annees})")
                 
-                st.subheader("Indicateurs Clés de Marché & Dérive d'Indice à Maturité")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Niveau Moyen PR", f"{moy_pr:.1f} pts", f"{(moy_pr/niveau_initial - 1.0)*100:+.1f}% vs Spot")
-                c2.metric("Niveau Moyen Décrément", f"{moy_dec:.1f} pts", f"{(moy_dec/niveau_initial - 1.0)*100:+.1f}% vs Spot")
-                c3.metric("Écart Moyen (Dec - PR)", f"{ecart_moy_pct:+.2f}% du Spot", f"{ecart_moy_pts:+.1f} pts")
-                c4.metric("Probabilité Fin < 50% du Spot", f"{pct_crash_50_dec:.1f}% (Dec)", f"vs {pct_crash_50_pr:.1f}% (PR)", delta_color="inverse")
-                
-                st.markdown("---")
-                
-                # 1. Trajectoires Centiles
-                st.subheader("1. Trajectoires Temporelles des Indices par Centiles (Top 10% à 90%)")
-                st.caption("Évolution comparée du Price Return et du Décrément sur les mêmes chocs aléatoires.")
-                _, fig_centiles = moteur.plot_results(
-                    f"Trajectoires Comparées (Spot {niveau_initial:.0f})", 
-                    traj_pr, traj_dec, reps_scen=[], product=None, scenario=scenario_krach, index=mon_indice_dec
-                )
-                st.plotly_chart(fig_centiles, use_container_width=True)
-                
-                st.markdown("---")
-                
-                # 2. Dispersion des écarts (Violons)
-                st.subheader("2. Dispersion des Écarts (Décrément - Price Return) par Année")
-                fig_violins_ecart, stats_disp = moteur.plot_dispersion_ecarts_violons(
-                    traj_pr, traj_dec, scenario_krach, niveau_initial=niveau_initial, return_stats=True
-                )
-                st.plotly_chart(fig_violins_ecart, use_container_width=True)
-                
-                with st.expander("Consulter le tableau quantitatif détaillé des écarts par année (Médiane, Moyenne, Quartiles, Centiles P1/P99)", expanded=False):
-                    df_disp = pd.DataFrame(stats_disp)
-                    df_disp_display = pd.DataFrame({
-                        "Horizon": df_disp["Année"],
-                        "Médiane (Dec - PR)": df_disp["Médiane"].apply(lambda v: f"{v:+.2f}%"),
-                        "Moyenne (Dec - PR)": df_disp["Moyenne"].apply(lambda v: f"{v:+.2f}%"),
-                        "25e centile (Q1)": df_disp["Q25"].apply(lambda v: f"{v:+.2f}%"),
-                        "75e centile (Q3)": df_disp["Q75"].apply(lambda v: f"{v:+.2f}%"),
-                        "Écart interquartile (IQR)": df_disp["IQR"].apply(lambda v: f"{v:.2f}%"),
-                        "Moustache Basse (P1)": df_disp["P1"].apply(lambda v: f"{v:+.2f}%"),
-                        "Moustache Haute (P99)": df_disp["P99"].apply(lambda v: f"{v:+.2f}%"),
-                        "Écart Min Absolu": df_disp["Min"].apply(lambda v: f"{v:+.2f}%"),
-                        "Écart Max Absolu": df_disp["Max"].apply(lambda v: f"{v:+.2f}%"),
+                data_macro = []
+                for nom_idx, d in results_multi.items():
+                    data_macro.append({
+                        "Indice": nom_idx,
+                        "Spot Initial S0": f"{d['index'].niveau_initial:.0f} pts",
+                        "Décrément Fixe": f"{d['index'].decrement_annuel:.0f} pts/an",
+                        "Volatilité": f"{d['index'].vol*100:.1f}%",
+                        "Yield Div Naturel": f"{d['index'].dividend_yield*100:.1f}%",
+                        "Niveau Final Décrément": f"{d['moy_dec']:.1f} pts ({d['moy_dec_pct']:+.1f}%)",
+                        "Niveau Final PR": f"{d['moy_pr']:.1f} pts ({d['moy_pr_pct']:+.1f}%)",
+                        "Écart Moyen (Dec - PR)": f"{d['ecart_moy_pct']:+.2f}% ({d['ecart_moy_pts']:+.1f} pts)",
+                        "Risque Crash < 50%": f"{d['pct_crash_50_dec']:.1f}% (vs {d['pct_crash_50_pr']:.1f}% PR)"
                     })
-                    st.dataframe(df_disp_display, use_container_width=True)
-                    
+                st.dataframe(pd.DataFrame(data_macro), use_container_width=True)
                 st.markdown("---")
                 
-                # 3. Distributions globales
-                st.subheader("3. Distributions des Niveaux Finaux à Maturité")
-                fig_dist_dec, fig_dist_pr, _, _, _ = moteur.plot_distributions(
-                    traj_pr, traj_dec, product=None, scenario=scenario_krach
-                )
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    st.plotly_chart(fig_dist_dec, use_container_width=True)
-                with col_d2:
-                    st.plotly_chart(fig_dist_pr, use_container_width=True)
+                # 1. Trajectoires Médianes Comparées
+                st.subheader("1. Trajectoires Médianes & Fuseaux Inter-centiles [P10 - P90]")
+                st.caption("Évolution comparée des indices normalisés en % de S0 sur la même matrice de chocs aléatoires.")
+                fig_multi_traj = moteur.plot_multi_trajectoires(results_multi, scenario_krach)
+                st.plotly_chart(fig_multi_traj, use_container_width=True)
+                st.markdown("---")
+                
+                # 2. Dispersion des Écarts à Maturité
+                st.subheader("2. Dispersion Comparée de l'Écart (Décrément - Price Return) à Maturité")
+                st.caption("Distribution de la surperformance / sous-performance du décrément bornée entre les centiles P1 et P99.")
+                fig_multi_disp = moteur.plot_multi_dispersion_ecarts(results_multi, scenario_krach)
+                st.plotly_chart(fig_multi_disp, use_container_width=True)
 
         elif mode == "Pricing":
-            with st.spinner(f"Simulation de {int(nb_trajectoires)} trajectoires et valorisation du contrat en cours..."):
-                barriere_rappel = niveau_initial * barriere_rappel_pct
-                niveau_pdi = niveau_initial * niveau_pdi_pct
+            with st.spinner(f"Valorisation sur {len(liste_indices)} indice(s) ({int(nb_trajectoires)} trajectoires appariées)..."):
+                ref_s0 = 1000.0
+                barriere_rappel = ref_s0 * barriere_rappel_pct
+                niveau_pdi = ref_s0 * niveau_pdi_pct
                 
                 if type_produit == "Athéna":
                     mon_produit = AthenaProduct(
@@ -179,10 +157,11 @@ if lancer:
                         non_call_period_mois=int(non_call_period_mois),
                         frequence_obs_mois=int(frequence_obs_mois),
                         degressivite=float(degressivite),
-                        coupon_periode=float(coupon_periode)
+                        coupon_periode=float(coupon_periode),
+                        ref_s0=ref_s0
                     )
                 else:
-                    barriere_coupon = niveau_initial * barriere_coupon_pct
+                    barriere_coupon = ref_s0 * barriere_coupon_pct
                     mon_produit = PhoenixProduct(
                         barriere_rappel=barriere_rappel,
                         barriere_coupon=barriere_coupon,
@@ -191,117 +170,48 @@ if lancer:
                         frequence_obs_mois=int(frequence_obs_mois),
                         degressivite=float(degressivite),
                         coupon_periode=float(coupon_periode),
-                        avec_memoire=avec_memoire
+                        avec_memoire=avec_memoire,
+                        ref_s0=ref_s0
                     )
                 
-                traj_pr, traj_dec, est_rappele_dec, obs_de_rappel_dec, payoffs_dec, est_rappele_pr, obs_de_rappel_pr, payoffs_pr = moteur.run(
-                    mon_indice_dec, scenario_krach, mon_produit, taux_actualisation=taux_actualisation
+                results_multi_pricing = moteur.run_multi_indices(
+                    liste_indices, scenario_krach, mon_produit, taux_actualisation=taux_actualisation
                 )
-                
-                duration_dec = moteur.calculer_duration(est_rappele_dec, obs_de_rappel_dec, mon_produit, scenario_krach)
-                duration_pr = moteur.calculer_duration(est_rappele_pr, obs_de_rappel_pr, mon_produit, scenario_krach)
                 
                 memoire_str = " (Mémoire)" if (type_produit == "Phoenix" and avec_memoire) else (" (Sans Mémoire)" if type_produit == "Phoenix" else "")
-                nom_scenario = f"Pricing {type_produit}{memoire_str} (Spot {niveau_initial:.0f})"
-                f = io.StringIO()
-                with contextlib.redirect_stdout(f):
-                    reps_scen, bin_stats, levier_equivalent = moteur.afficher_statistiques(
-                        nom_scenario, traj_pr, traj_dec, est_rappele_dec, payoffs_dec, est_rappele_pr, payoffs_pr, mon_produit, scenario_krach
-                    )
-                stats_text = f.getvalue()
-                
-                pct_rappel_dec = np.mean(est_rappele_dec) * 100.0
-                pct_rappel_pr = np.mean(est_rappele_pr) * 100.0
-                moy_payoff_dec = np.mean(payoffs_dec) * 100.0
-                moy_payoff_pr = np.mean(payoffs_pr) * 100.0
-                
-                valeurs_finales_dec = traj_dec[:, -1]
-                valeurs_finales_pr = traj_pr[:, -1]
-                en_dessous_pdi_dec = (valeurs_finales_dec < mon_produit.niveau_pdi) & (~est_rappele_dec)
-                en_dessous_pdi_pr = (valeurs_finales_pr < mon_produit.niveau_pdi) & (~est_rappele_pr)
-                pct_pdi_dec = np.mean(en_dessous_pdi_dec) * 100.0
-                pct_pdi_pr = np.mean(en_dessous_pdi_pr) * 100.0
-                
                 st.subheader(f"Indicateurs de Performance et de Risque : {type_produit}{memoire_str}")
-                kp1, kp2, kp3, kp4, kp5 = st.columns(5)
-                kp1.metric("Duration Espérée", f"{duration_dec:.2f} ans", f"vs {duration_pr:.2f} ans (PR)", delta_color="inverse")
-                kp2.metric("Taux d'Autocall", f"{pct_rappel_dec:.1f}%", f"{pct_rappel_dec - pct_rappel_pr:+.1f}% vs PR")
-                kp3.metric("Espérance de Gain", f"{moy_payoff_dec:.2f}%", f"{moy_payoff_dec - moy_payoff_pr:+.2f}% vs PR")
-                kp4.metric("Probabilité sous PDI", f"{pct_pdi_dec:.2f}%", f"{pct_pdi_dec - pct_pdi_pr:+.2f}% vs PR", delta_color="inverse")
-                levier_label = f"{levier_equivalent:.2f}x" if levier_equivalent is not None else "N/A"
-                kp5.metric(
-                    "Levier Krach vs PR", levier_label, 
-                    help="Multiplicateur de perte du Décrément par rapport au Price Return en cas de franchissement de PDI."
-                )
                 
-                st.markdown("---")
-                
-                # 1. Dates de rappel
-                st.subheader("1. Distribution des Dates de Rappel Anticipé")
-                fig_dist_dec, fig_dist_pr, fig_dist_rappel, fig_dist_dec_reelle, fig_dist_pr_reelle = moteur.plot_distributions(
-                    traj_pr, traj_dec, est_rappele_pr, est_rappele_dec, mon_produit, scenario_krach
-                )
-                st.plotly_chart(fig_dist_rappel, use_container_width=True)
-                
-                st.markdown("---")
-                
-                # 2. Trajectoires sous PDI
-                st.subheader("2. Trajectoires Critiques sous PDI")
-                fig1, _ = moteur.plot_results(
-                    nom_scenario, traj_pr, traj_dec, reps_scen, mon_produit, scenario_krach, mon_indice_dec
-                )
-                if len(reps_scen) > 0:
-                    st.plotly_chart(fig1, use_container_width=True)
-                else:
-                    st.info("Aucune trajectoire ne finit en dessous du PDI à maturité dans cette simulation.")
-                    
-                st.markdown("---")
-                
-                # 3. Dispersion des écarts sur trajectoires actives (Effet barrière de rappel)
-                st.subheader("3. Dispersion des Écarts (Décrément - Price Return) sur Trajectoires Non Rappelées")
-                fig_violins_pricing, stats_disp_pricing = moteur.plot_dispersion_ecarts_violons(
-                    traj_pr, traj_dec, scenario_krach,
-                    niveau_initial=niveau_initial,
-                    return_stats=True,
-                    product=mon_produit,
-                    est_rappele_dec=est_rappele_dec,
-                    obs_de_rappel_dec=obs_de_rappel_dec
-                )
-                st.plotly_chart(fig_violins_pricing, use_container_width=True)
-                
-                with st.expander("Consulter le tableau quantitatif détaillé des écarts sur trajectoires actives (Centiles P1/P99)", expanded=False):
-                    df_disp_p = pd.DataFrame(stats_disp_pricing)
-                    df_disp_p_display = pd.DataFrame({
-                        "Horizon": df_disp_p["Année"],
-                        "Trajectoires Actives": df_disp_p["Actives"],
-                        "Médiane (Dec - PR)": df_disp_p["Médiane"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "Moyenne (Dec - PR)": df_disp_p["Moyenne"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "25e centile (Q1)": df_disp_p["Q25"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "75e centile (Q3)": df_disp_p["Q75"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "Écart interquartile (IQR)": df_disp_p["IQR"].apply(lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A"),
-                        "Moustache Basse (P1)": df_disp_p["P1"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "Moustache Haute (P99)": df_disp_p["P99"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "Écart Min Absolu": df_disp_p["Min"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "Écart Max Absolu": df_disp_p["Max"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                # Tableau comparatif
+                data_pricing = []
+                for nom_idx, d in results_multi_pricing.items():
+                    lev_str = f"{d['levier_equivalent']:.2f}x" if d['levier_equivalent'] is not None else "N/A"
+                    data_pricing.append({
+                        "Indice": nom_idx,
+                        "Taux d'Autocall": f"{d['pct_rappel_dec']:.1f}% (vs {d['pct_rappel_pr']:.1f}% PR)",
+                        "Espérance de Gain": f"{d['moy_payoff_dec']:.2f}% (vs {d['moy_payoff_pr']:.2f}% PR)",
+                        "Duration Espérée": f"{d['duration_dec']:.2f} ans (vs {d['duration_pr']:.2f} ans PR)",
+                        "Probabilité sous PDI": f"{d['pct_pdi_dec']:.2f}% (vs {d['pct_pdi_pr']:.2f}% PR)",
+                        "Levier Krach vs PR": lev_str
                     })
-                    st.dataframe(df_disp_p_display, use_container_width=True)
-                    
+                st.dataframe(pd.DataFrame(data_pricing), use_container_width=True)
                 st.markdown("---")
                 
-                # 4. Analyse détaillée de Krach
-                st.subheader("4. Analyse de Sévérité du Krach sous PDI")
-                if bin_stats:
-                    fig_binned = moteur.plot_binned_averages(bin_stats)
-                    st.plotly_chart(fig_binned, use_container_width=True)
-                    
-                col_r1, col_r2 = st.columns(2)
-                with col_r1:
-                    st.plotly_chart(fig_dist_dec_reelle, use_container_width=True)
-                with col_r2:
-                    st.plotly_chart(fig_dist_pr_reelle, use_container_width=True)
-                    
-                with st.expander("Consulter le détail textuel des statistiques de rappel et de PDI", expanded=False):
-                    st.markdown(stats_text)
+                # 1. Graphique Comparatif des KPIs
+                st.subheader("1. Indicateurs Comparés de Performance et de Risque")
+                fig_kpis = moteur.plot_multi_pricing_kpis(results_multi_pricing)
+                st.plotly_chart(fig_kpis, use_container_width=True)
+                st.markdown("---")
+                
+                # 2. Distribution comparée des dates de rappel
+                st.subheader("2. Distribution Comparée des Dates de Rappel Anticipé")
+                fig_rappels = moteur.plot_multi_pricing_rappels(results_multi_pricing, scenario_krach, mon_produit)
+                st.plotly_chart(fig_rappels, use_container_width=True)
+                st.markdown("---")
+                
+                # 3. Dispersion des écarts à maturité
+                st.subheader("3. Dispersion Comparée de l'Écart (Décrément - Price Return) à Maturité")
+                fig_disp_pricing = moteur.plot_multi_dispersion_ecarts(results_multi_pricing, scenario_krach)
+                st.plotly_chart(fig_disp_pricing, use_container_width=True)
 
 else:
     st.info("Ajustez les paramètres dans la barre latérale gauche, puis cliquez sur le bouton pour lancer le calcul.")
