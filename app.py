@@ -21,7 +21,7 @@ st.sidebar.header("Paramètres")
 with st.sidebar.expander("1. Durée", expanded=True):
     annees = st.number_input("Années totales", value=10, min_value=1, step=1)
 
-with st.sidebar.expander("2. Configuration des Périodes", expanded=True):
+with st.sidebar.expander("2. Configuration des Périodes (Scénario Macro)", expanded=True):
     nb_periodes = st.number_input("Nombre de Périodes", value=1, min_value=1, step=1)
     
     mes_regimes_input = []
@@ -30,26 +30,23 @@ with st.sidebar.expander("2. Configuration des Périodes", expanded=True):
         st.markdown(f"**Période {i+1}**")
         def_d = 10 if i == 0 else (2 if i == 1 else 5)
         def_rp = 0.0 if i == 0 else (-15.0 if i == 1 else 5.0)
-        def_vol = 18.0 if i == 0 else (35.0 if i == 1 else 18.0)
-        def_yi = 3.0 if i == 0 else (1.0 if i == 1 else 4.0)
         
         d = st.number_input(f"Durée (ans) P{i+1}", value=def_d, min_value=1, key=f"d_pct_{i}")
         rp = st.number_input(f"Drift Price Return P{i+1} (%)", value=def_rp, format="%.1f", key=f"rp_pct_{i}")
-        vol = st.number_input(f"Volatilité P{i+1} (%)", value=def_vol, format="%.1f", key=f"vol_pct_{i}")
-        yi = st.number_input(f"Yield Div Naturel P{i+1} (%)", value=def_yi, format="%.2f", key=f"yi_pct_{i}")
         st.divider()
         
         somme_annees += d
         mes_regimes_input.append({
             "duree_annees": int(d),
-            "r_perf": rp / 100.0,
-            "vol": vol / 100.0,
-            "yield_initial": yi / 100.0
+            "r_perf": rp / 100.0
         })
 
-with st.sidebar.expander("3. Indice Decrement", expanded=True):
-    niveau_initial = st.number_input("Niveau Initial (pts)", value=1000.0, step=100.0)
-    decrement_annuel = st.number_input("Décrément Fixe Annuel (pts)", value=50.0, step=5.0)
+with st.sidebar.expander("3. Caractéristiques de l'Indice", expanded=True):
+    nom_indice = st.text_input("Nom de l'Indice", value="Indice Décrément")
+    niveau_initial = st.number_input("Niveau Initial S0 (pts)", value=1000.0, step=100.0)
+    decrement_annuel = st.number_input("Décrément Fixe Annuel D (pts)", value=50.0, step=5.0)
+    vol_input = st.number_input("Volatilité de l'Indice (%)", value=18.0, step=1.0, format="%.1f")
+    yi_input = st.number_input("Yield Div Naturel Réinvesti (%)", value=3.0, step=0.25, format="%.2f")
 
 if mode == "Pricing":
     with st.sidebar.expander("4. Produit Structuré", expanded=True):
@@ -92,7 +89,13 @@ if lancer:
     else:
         moteur = SimulationEngine(nb_trajectoires=int(nb_trajectoires), seed=int(seed))
         scenario_krach = MarketScenario(config_regimes=mes_regimes_input, annees=int(annees))
-        mon_indice_dec = DecrementIndex(niveau_initial=niveau_initial, decrement_annuel=decrement_annuel)
+        mon_indice_dec = DecrementIndex(
+            niveau_initial=niveau_initial, 
+            decrement_annuel=decrement_annuel,
+            vol=vol_input / 100.0,
+            dividend_yield=yi_input / 100.0,
+            nom=nom_indice
+        )
 
         if mode == "Comparaison Trajectoires":
             with st.spinner(f"Génération de {int(nb_trajectoires)} trajectoires pour l'indice Price Return et Décrément..."):

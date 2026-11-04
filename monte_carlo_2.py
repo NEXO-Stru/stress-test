@@ -3,7 +3,10 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 
 class MarketScenario:
-    """Gère l'environnement de marché de manière dynamique (N périodes)"""
+    """Gère l'environnement macro de marché de manière dynamique (N périodes).
+    Définit uniquement la ligne de temps et la dérive de marché du Price Return (r_perf).
+    La volatilité et le rendement de dividende appartiennent exclusivement aux indices.
+    """
     def __init__(self, config_regimes, annees=10, jours_par_an=252):
         self.annees = annees
         self.jours_par_an = jours_par_an
@@ -14,7 +17,7 @@ class MarketScenario:
         
         jour_actuel = 0
         annee_actuelle = 0
-        #configure les régimes
+        # configure les régimes
         for i, regime in enumerate(self.config_regimes):
             regime['jour_debut'] = jour_actuel
             regime['annee_debut'] = annee_actuelle
@@ -24,9 +27,6 @@ class MarketScenario:
             regime['annee_fin'] = min(annee_actuelle, self.annees)
 
         self.r_perf_dyn = np.zeros(self.total_jours)
-        self.vol_dyn = np.zeros(self.total_jours)
-        self.yield_dyn = np.zeros(self.total_jours)
-        
         self.build_regimes()
         
     def build_regimes(self):
@@ -34,17 +34,62 @@ class MarketScenario:
             j_deb = regime['jour_debut']
             j_fin = regime['jour_fin']
             if j_deb < self.total_jours:
-                self.r_perf_dyn[j_deb:j_fin] = regime["r_perf"]
-                self.vol_dyn[j_deb:j_fin] = regime["vol"]
-                self.yield_dyn[j_deb:j_fin] = regime["yield_initial"]
+                self.r_perf_dyn[j_deb:j_fin] = regime.get("r_perf", 0.0)
                 
 
 class DecrementIndex:
-    """Modélise spécifiquement la mécanique mathématique d'un indice Decrement"""
-    def __init__(self, niveau_initial=1000.0, decrement_annuel=50.0):
-        self.niveau_initial = niveau_initial
-        self.decrement_annuel = decrement_annuel
+    """Modélise spécifiquement la mécanique mathématique d'un indice Décrément et ses caractéristiques propres :
+    - niveau initial (S0)
+    - décrément annuel fixe en points
+    - volatilité propre (vol)
+    - rendement de dividende réinvesti propre (dividend_yield)
+    - nom / libellé
+    """
+    def __init__(self, niveau_initial=1000.0, decrement_annuel=50.0, vol=0.18, dividend_yield=0.03, nom="Indice Décrément"):
+        self.niveau_initial = float(niveau_initial)
+        self.decrement_annuel = float(decrement_annuel)
+        self.vol = vol
+        self.dividend_yield = dividend_yield
+        self.nom = str(nom)
         
+    def _get_vol_dyn(self, scenario: MarketScenario):
+        if self.vol is None:
+            raise ValueError("La volatilité (vol) doit être définie sur l'indice DecrementIndex.")
+        if isinstance(self.vol, (list, tuple, np.ndarray)):
+            vol_dyn = np.zeros(scenario.total_jours)
+            cumul_j = 0
+            for i, v in enumerate(self.vol):
+                reg = scenario.config_regimes[i] if i < len(scenario.config_regimes) else None
+                nb_j = reg['duree_annees'] * scenario.jours_par_an if reg else (scenario.total_jours - cumul_j)
+                j_deb = cumul_j
+                j_fin = min(scenario.total_jours, j_deb + nb_j)
+                vol_dyn[j_deb:j_fin] = float(v)
+                cumul_j = j_fin
+            if cumul_j < scenario.total_jours:
+                vol_dyn[cumul_j:] = float(self.vol[-1])
+            return vol_dyn
+        else:
+            return np.full(scenario.total_jours, float(self.vol))
+
+    def _get_yield_dyn(self, scenario: MarketScenario):
+        if self.dividend_yield is None:
+            raise ValueError("Le rendement dividende (dividend_yield) doit être défini sur l'indice DecrementIndex.")
+        if isinstance(self.dividend_yield, (list, tuple, np.ndarray)):
+            yield_dyn = np.zeros(scenario.total_jours)
+            cumul_j = 0
+            for i, y in enumerate(self.dividend_yield):
+                reg = scenario.config_regimes[i] if i < len(scenario.config_regimes) else None
+                nb_j = reg['duree_annees'] * scenario.jours_par_an if reg else (scenario.total_jours - cumul_j)
+                j_deb = cumul_j
+                j_fin = min(scenario.total_jours, j_deb + nb_j)
+                yield_dyn[j_deb:j_fin] = float(y)
+                cumul_j = j_fin
+            if cumul_j < scenario.total_jours:
+                yield_dyn[cumul_j:] = float(self.dividend_yield[-1])
+            return yield_dyn
+        else:
+            return np.full(scenario.total_jours, float(self.dividend_yield))
+
     def simulate(self, scenario: MarketScenario, nb_trajectoires, Z_chocs):
         d_points = self.decrement_annuel / scenario.jours_par_an
         dt = scenario.dt
@@ -56,11 +101,14 @@ class DecrementIndex:
         trajectoires_dec[:, 0] = self.niveau_initial
         trajectoires_pr[:, 0] = self.niveau_initial
         
+        vol_dyn = self._get_vol_dyn(scenario)
+        yield_dyn = self._get_yield_dyn(scenario)
+        
         for t in range(1, total_jours + 1):
             z = Z_chocs[:, t-1]
-            vol_j = scenario.vol_dyn[t-1]
-            r_perf_j = scenario.r_perf_dyn[t-1]  # Drift Price Return
-            yield_j = scenario.yield_dyn[t-1]    # Constant Yield
+            vol_j = vol_dyn[t-1]
+            r_perf_j = scenario.r_perf_dyn[t-1]  # Drift Price Return macro
+            yield_j = yield_dyn[t-1]             # Rendement dividende de l'indice
             
             choc_jour = vol_j * np.sqrt(dt) * z
             
@@ -277,6 +325,45 @@ class SimulationEngine:
         )
         return traj_pr, traj_dec, est_rappele_dec, obs_de_rappel_dec, payoffs_dec, est_rappele_pr, obs_de_rappel_pr, payoffs_pr
 
+    def simulate_multi_indices(self, list_indices: list, scenario: MarketScenario):
+        """Simule simultanément plusieurs indices sur la MÊME matrice de chocs aléatoires Z (tirages appariés)."""
+        Z_chocs = np.random.normal(0, 1, size=(self.nb_trajectoires, scenario.total_jours))
+        results = {}
+        for idx in list_indices:
+            traj_pr, traj_dec = idx.simulate(scenario, self.nb_trajectoires, Z_chocs)
+            results[idx.nom] = {
+                "index": idx,
+                "traj_pr": traj_pr,
+                "traj_dec": traj_dec
+            }
+        return results
+
+    def run_multi_indices(self, list_indices: list, scenario: MarketScenario, product: AutocallProduct, taux_actualisation=0.0):
+        """Évalue un produit structuré sur plusieurs indices en tirages appariés stricts (mêmes chocs Z)."""
+        Z_chocs = np.random.normal(0, 1, size=(self.nb_trajectoires, scenario.total_jours))
+        results = {}
+        for idx in list_indices:
+            traj_pr, traj_dec = idx.simulate(scenario, self.nb_trajectoires, Z_chocs)
+            est_rappele_dec, obs_de_rappel_dec, payoffs_dec, est_rappele_pr, obs_de_rappel_pr, payoffs_pr = self.evaluer_produit(
+                product, traj_pr, traj_dec, scenario, niveau_initial=idx.niveau_initial, taux_actualisation=taux_actualisation
+            )
+            duration_dec = self.calculer_duration(est_rappele_dec, obs_de_rappel_dec, product, scenario)
+            duration_pr = self.calculer_duration(est_rappele_pr, obs_de_rappel_pr, product, scenario)
+            results[idx.nom] = {
+                "index": idx,
+                "traj_pr": traj_pr,
+                "traj_dec": traj_dec,
+                "est_rappele_dec": est_rappele_dec,
+                "obs_de_rappel_dec": obs_de_rappel_dec,
+                "payoffs_dec": payoffs_dec,
+                "est_rappele_pr": est_rappele_pr,
+                "obs_de_rappel_pr": obs_de_rappel_pr,
+                "payoffs_pr": payoffs_pr,
+                "duration_dec": duration_dec,
+                "duration_pr": duration_pr
+            }
+        return results
+
     def calculer_duration(self, est_rappele, obs_de_rappel, product: AutocallProduct, scenario: MarketScenario):
         jours_par_mois = scenario.jours_par_an // 12
         jours_entre_observations = jours_par_mois * product.frequence_obs_mois
@@ -378,7 +465,7 @@ class SimulationEngine:
             color = colors[i % len(colors)]
             fig.add_vrect(x0=regime['annee_debut'], x1=regime['annee_fin'], fillcolor=color, opacity=0.1, line_width=0, layer="below")
             fig.add_annotation(x=(regime['annee_debut'] + regime['annee_fin'])/2, y=1.0, yref="paper", 
-                               text=f"Période {i+1}<br>Drift PR: {regime['r_perf']*100:+.1f}%<br>Vol: {regime['vol']*100:.0f}%<br>Yield Div: {regime['yield_initial']*100:.1f}%",
+                               text=f"Période {i+1}<br>Drift PR: {regime.get('r_perf', 0.0)*100:+.1f}%",
                                showarrow=False, bgcolor="rgba(255,255,255,0.8)", bordercolor="lightgray")
 
     def _add_product_levels_plotly(self, fig, product, scenario, niveau_initial):
@@ -926,11 +1013,11 @@ class SimulationEngine:
 
 if __name__ == "__main__":
     mes_regimes = [
-        {"duree_annees": 10, "r_perf": 0.0, "vol": 0.18, "yield_initial": 0.03}
+        {"duree_annees": 10, "r_perf": 0.0}
     ]
     
     scenario_krach = MarketScenario(config_regimes=mes_regimes, annees=10, jours_par_an=252)
-    mon_indice_dec = DecrementIndex(niveau_initial=1000.0, decrement_annuel=50.0)
+    mon_indice_dec = DecrementIndex(niveau_initial=1000.0, decrement_annuel=50.0, vol=0.18, dividend_yield=0.03)
     pdi_pts = mon_indice_dec.niveau_initial * 0.50
     mon_autocall = AutocallProduct(barriere_rappel=1000.0, niveau_pdi=pdi_pts, non_call_period_mois=11, frequence_obs_mois=3, degressivite=1.0)
     
