@@ -752,6 +752,8 @@ class SimulationEngine:
             q25 = float(np.percentile(ecart_k, 25))
             q75 = float(np.percentile(ecart_k, 75))
             iqr = q75 - q25
+            p1 = float(np.percentile(ecart_k, 1.0))
+            p99 = float(np.percentile(ecart_k, 99.0))
             val_min = float(np.min(ecart_k))
             val_max = float(np.max(ecart_k))
             
@@ -768,6 +770,8 @@ class SimulationEngine:
                 "Q25": q25,
                 "Q75": q75,
                 "IQR": iqr,
+                "P1": p1,
+                "P99": p99,
                 "Min": val_min,
                 "Max": val_max
             }
@@ -775,16 +779,33 @@ class SimulationEngine:
                 stat_row["Actives"] = f"{n_active:,} ({pct_active:.1f}%)"
             stats_data.append(stat_row)
             
-            # Hover personnalisé indiquant les trajectoires actives en pricing
+            # Hover personnalisé indiquant les trajectoires actives en pricing et les bornes P1-P99
             if is_pricing_mode:
-                hover_info = f"<b>{label_annee}</b><br>Écart : <b>%{{y:+.2f}}%</b><br>Trajectoires encore actives : <b>{n_active:,} ({pct_active:.1f}%)</b><extra></extra>"
+                hover_info = (
+                    f"<b>{label_annee}</b><br>"
+                    f"Écart : <b>%{{y:+.2f}}%</b><br>"
+                    f"Moustaches [P1, P99] : <b>[{p1:+.2f}%, {p99:+.2f}%]</b><br>"
+                    f"Trajectoires encore actives : <b>{n_active:,} ({pct_active:.1f}%)</b>"
+                    "<extra></extra>"
+                )
             else:
-                hover_info = f"<b>{label_annee}</b><br>Écart : <b>%{{y:+.2f}}%</b><extra></extra>"
+                hover_info = (
+                    f"<b>{label_annee}</b><br>"
+                    f"Écart : <b>%{{y:+.2f}}%</b><br>"
+                    f"Moustaches [P1, P99] : <b>[{p1:+.2f}%, {p99:+.2f}%]</b>"
+                    "<extra></extra>"
+                )
+            
+            # Pour le tracé du violon, on restreint aux 98% de trajectoires au cœur du marché (P1 à P99)
+            # afin d'éviter qu'une poignée d'extrêmes browniens à 5 sigmas n'écrase l'axe Y
+            ecart_plot = ecart_k[(ecart_k >= p1) & (ecart_k <= p99)]
+            if len(ecart_plot) == 0:
+                ecart_plot = ecart_k
             
             # Violon avec boîte à moustache intégrée (Raincloud / Box-in-Violin)
             fig.add_trace(go.Violin(
-                y=ecart_k,
-                x=[label_annee] * len(ecart_k),
+                y=ecart_plot,
+                x=[label_annee] * len(ecart_plot),
                 name=label_annee,
                 box_visible=True,
                 box_width=0.38,
@@ -802,32 +823,32 @@ class SimulationEngine:
                 hovertemplate=hover_info
             ))
             
-            # Moustache verticale jusqu'au Max réel
+            # Moustache verticale jusqu'au Centile 99% (P99)
             fig.add_shape(
                 type='line', xref='x', yref='y',
-                x0=idx, x1=idx, y0=q75, y1=val_max,
+                x0=idx, x1=idx, y0=q75, y1=p99,
                 line=dict(color='#0f172a', width=1.6),
                 layer='above'
             )
-            # Barre horizontale (chapeau de moustache) au niveau du Max réel
+            # Barre horizontale (chapeau de moustache) au niveau de P99
             fig.add_shape(
                 type='line', xref='x', yref='y',
-                x0=idx - 0.12, x1=idx + 0.12, y0=val_max, y1=val_max,
+                x0=idx - 0.12, x1=idx + 0.12, y0=p99, y1=p99,
                 line=dict(color='#0f172a', width=2.0),
                 layer='above'
             )
             
-            # Moustache verticale jusqu'au Min réel
+            # Moustache verticale jusqu'au Centile 1% (P1)
             fig.add_shape(
                 type='line', xref='x', yref='y',
-                x0=idx, x1=idx, y0=q25, y1=val_min,
+                x0=idx, x1=idx, y0=q25, y1=p1,
                 line=dict(color='#0f172a', width=1.6),
                 layer='above'
             )
-            # Barre horizontale (chapeau de moustache) au niveau du Min réel
+            # Barre horizontale (chapeau de moustache) au niveau de P1
             fig.add_shape(
                 type='line', xref='x', yref='y',
-                x0=idx - 0.12, x1=idx + 0.12, y0=val_min, y1=val_min,
+                x0=idx - 0.12, x1=idx + 0.12, y0=p1, y1=p1,
                 line=dict(color='#0f172a', width=2.0),
                 layer='above'
             )
@@ -859,13 +880,9 @@ class SimulationEngine:
         ))
         
         if is_pricing_mode:
-            barr_init_pct = (product.barriere_rappel / niveau_initial) * 100.0
-            chart_title = (
-                "<b>Dispersion des Écarts (Décrément - PR) sur Trajectoires Actives</b><br>"
-                f"<span style='font-size:12px; color:#64748b; font-weight:normal;'>Conditionnée à la barrière de rappel sur le Décrément ({barr_init_pct:.0f}% initial) — arrêt des trajectoires dès rappel</span>"
-            )
+            chart_title = "<b>Dispersion des Écarts (Décrément - Price Return) sur Trajectoires Actives</b>"
         else:
-            chart_title = "<b>Dispersion des Écarts (Decrement - Price Return) par Année</b>"
+            chart_title = "<b>Dispersion des Écarts (Décrément - Price Return) par Année</b>"
             
         fig.update_layout(
             title=dict(
@@ -883,7 +900,7 @@ class SimulationEngine:
                 zeroline=False, # Pas de ligne à 0% demandée
                 gridcolor='#f1f5f9',
                 gridwidth=1,
-                tickfont=dict(size=12, color='#334155')
+                tickfont=dict(size=12, color='#0f172a')
             ),
             height=750,
             plot_bgcolor='#ffffff',

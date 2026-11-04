@@ -135,7 +135,7 @@ if lancer:
                 )
                 st.plotly_chart(fig_violins_ecart, use_container_width=True)
                 
-                with st.expander("Consulter le tableau quantitatif détaillé des écarts par année (Médiane, Moyenne, Quartiles)", expanded=False):
+                with st.expander("Consulter le tableau quantitatif détaillé des écarts par année (Médiane, Moyenne, Quartiles, Centiles P1/P99)", expanded=False):
                     df_disp = pd.DataFrame(stats_disp)
                     df_disp_display = pd.DataFrame({
                         "Horizon": df_disp["Année"],
@@ -144,8 +144,10 @@ if lancer:
                         "25e centile (Q1)": df_disp["Q25"].apply(lambda v: f"{v:+.2f}%"),
                         "75e centile (Q3)": df_disp["Q75"].apply(lambda v: f"{v:+.2f}%"),
                         "Écart interquartile (IQR)": df_disp["IQR"].apply(lambda v: f"{v:.2f}%"),
-                        "Écart Min": df_disp["Min"].apply(lambda v: f"{v:+.2f}%"),
-                        "Écart Max": df_disp["Max"].apply(lambda v: f"{v:+.2f}%"),
+                        "Moustache Basse (P1)": df_disp["P1"].apply(lambda v: f"{v:+.2f}%"),
+                        "Moustache Haute (P99)": df_disp["P99"].apply(lambda v: f"{v:+.2f}%"),
+                        "Écart Min Absolu": df_disp["Min"].apply(lambda v: f"{v:+.2f}%"),
+                        "Écart Max Absolu": df_disp["Max"].apply(lambda v: f"{v:+.2f}%"),
                     })
                     st.dataframe(df_disp_display, use_container_width=True)
                     
@@ -264,7 +266,7 @@ if lancer:
                 )
                 st.plotly_chart(fig_violins_pricing, use_container_width=True)
                 
-                with st.expander("Consulter le tableau quantitatif détaillé des écarts sur trajectoires actives", expanded=False):
+                with st.expander("Consulter le tableau quantitatif détaillé des écarts sur trajectoires actives (Centiles P1/P99)", expanded=False):
                     df_disp_p = pd.DataFrame(stats_disp_pricing)
                     df_disp_p_display = pd.DataFrame({
                         "Horizon": df_disp_p["Année"],
@@ -274,8 +276,10 @@ if lancer:
                         "25e centile (Q1)": df_disp_p["Q25"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
                         "75e centile (Q3)": df_disp_p["Q75"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
                         "Écart interquartile (IQR)": df_disp_p["IQR"].apply(lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A"),
-                        "Écart Min": df_disp_p["Min"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
-                        "Écart Max": df_disp_p["Max"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "Moustache Basse (P1)": df_disp_p["P1"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "Moustache Haute (P99)": df_disp_p["P99"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "Écart Min Absolu": df_disp_p["Min"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
+                        "Écart Max Absolu": df_disp_p["Max"].apply(lambda v: f"{v:+.2f}%" if pd.notna(v) else "N/A"),
                     })
                     st.dataframe(df_disp_p_display, use_container_width=True)
                     
